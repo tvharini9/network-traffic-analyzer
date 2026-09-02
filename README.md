@@ -1,6 +1,6 @@
 # NETWATCH
 
-## What this version does
+## What this does
 
 - Public live dashboard: throughput, packets/sec, active devices, top talkers, protocols, and live anomaly alerts.
 - Account-only pages: History, Devices, Anomalies, Analytics, and Network Map.
