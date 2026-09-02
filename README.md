@@ -1,4 +1,4 @@
-# Network Traffic Analyzer — upgraded
+# Network Traffic Analyzer 
 
 ## What this version does
 
