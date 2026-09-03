@@ -541,3 +541,28 @@ def get_devices_for_user(user_id: int) -> list[dict[str, Any]]:
 
 
 
+
+def get_device_by_token(token_hash: str) -> dict[str, Any] | None:
+    db = SessionLocal()
+    try:
+        device = (
+            db.query(Device)
+            .filter(Device.token_hash == token_hash)
+            .first()
+        )
+
+        if not device:
+            return None
+
+        return {
+            "id": device.id,
+            "user_id": device.user_id,
+            "device_id": device.device_id,
+            "device_name": device.device_name,
+            "token_hash": device.token_hash,
+            "created_at": device.created_at,
+            "last_seen": device.last_seen,
+        }
+    finally:
+        db.close()
+
