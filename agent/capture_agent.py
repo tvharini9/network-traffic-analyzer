@@ -6,9 +6,13 @@ import json
 import platform
 import re
 import socket
+import sys
 import subprocess
 import threading
 import time
+import os
+import sys
+import os
 import os
 from collections import Counter, deque
 
@@ -262,14 +266,37 @@ async def main(iface, backend_url, token, device_id):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Network Traffic Analyzer capture agent")
     parser.add_argument("--iface", default=None, help="Network interface to sniff")
-    parser.add_argument("--backend", required=True, help="Backend WebSocket URL")
-    parser.add_argument("--token", required=True, help="Backend ingest token")
+    parser.add_argument("--backend", default=None, help="Backend WebSocket URL")
+    parser.add_argument("--token", default=None, help="Backend ingest token")
     parser.add_argument("--device-id", default=platform.node(), help="Unique identifier for this device")
     args = parser.parse_args()
+
+    if getattr(sys, "frozen", False):
+        config_path = os.path.join(os.path.dirname(sys.executable), "agent_config.json")
+    else:
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_config.json")
+
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8-sig") as f:
+            config = json.load(f)
+
+        args.backend = args.backend or config.get("backend")
+        args.token = args.token or config.get("token")
+        args.device_id = args.device_id or config.get("device_id")
+
+    if not args.backend or not args.token:
+        raise RuntimeError("Agent configuration is missing.")
+
+    args.device_id = args.device_id or platform.node()
+
     try:
         asyncio.run(main(args.iface, args.backend, args.token, args.device_id))
     except KeyboardInterrupt:
         print("\n[agent] stopped")
+
+
+
+
 
 
 
