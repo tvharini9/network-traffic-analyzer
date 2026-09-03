@@ -1,7 +1,9 @@
-import asyncio
+﻿import asyncio
+import hashlib
 import ipaddress
 import json
 import os
+import secrets
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -83,7 +85,7 @@ class RollingStats:
                         "current_bytes": current_bytes,
                         "baseline_bytes": round(avg),
                         "multiplier": round(multiplier, 2),
-                        "message": f"{ip} is sending {multiplier:.1f}× its usual traffic",
+                        "message": f"{ip} is sending {multiplier:.1f}Ã— its usual traffic",
                     })
             hist.append(current_bytes)
 
@@ -107,30 +109,35 @@ class RollingStats:
 
 
 stats = RollingStats()
+stats_by_device: dict[str, RollingStats] = {}
+device_user_ids: dict[str, int] = {}
 
 
 class DashboardManager:
     def __init__(self):
-        self.clients: set[WebSocket] = set()
+        self.clients: dict[WebSocket, int | None] = {}
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, user_id: int | None) -> None:
         await websocket.accept()
-        self.clients.add(websocket)
+        self.clients[websocket] = user_id
 
     def disconnect(self, websocket: WebSocket) -> None:
-        self.clients.discard(websocket)
+        self.clients.pop(websocket, None)
 
-    async def broadcast(self, message: dict) -> None:
+    async def broadcast(self, message: dict, user_id: int | None) -> None:
         dead = []
-        for websocket in list(self.clients):
+
+        for websocket, client_user_id in list(self.clients.items()):
+            if client_user_id != user_id:
+                continue
+
             try:
                 await websocket.send_json(message)
             except Exception:
                 dead.append(websocket)
+
         for websocket in dead:
             self.disconnect(websocket)
-
-
 dashboard_manager = DashboardManager()
 
 
@@ -158,12 +165,44 @@ async def health():
         "window_packets": len(stats.packets),
     }
 
+@app.post("/devices/register")
+async def register_device(
+    request: Request,
+    device_id: str = Form(...),
+    device_name: str = Form(""),
+):
+    user_id = require_user(request)
+    if not user_id:
+        return auth_error("Login required")
+
+    device_id = device_id.strip()
+    device_name = device_name.strip()
+
+    if not device_id:
+        return auth_error("Device ID is required.", 400)
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+    device = await asyncio.to_thread(
+        database.register_device,
+        user_id,
+        device_id,
+        device_name or device_id,
+        token_hash,
+    )
+
+    return {
+        "message": "Device registered",
+        "device": device,
+        "token": raw_token,
+    }
 
 @app.post("/signup")
 async def signup(request: Request, username: str = Form(...), password: str = Form(...)):
     username = username.strip()
     if not 3 <= len(username) <= 64:
-        return auth_error("Username must be 3–64 characters.", 400)
+        return auth_error("Username must be 3â€“64 characters.", 400)
     if len(password) < 8:
         return auth_error("Password must be at least 8 characters.", 400)
     try:
@@ -197,7 +236,16 @@ async def login(request: Request, username: str = Form(...), password: str = For
         secure=request.url.scheme == "https",
     )
     return response
+@app.get("/devices")
+async def list_devices(request: Request):
+    user_id = require_user(request)
+    if not user_id:
+        return auth_error("Login required")
 
+    return await asyncio.to_thread(
+        database.get_devices_for_user,
+        user_id,
+    )
 
 @app.post("/logout")
 async def logout():
@@ -306,57 +354,124 @@ async def enrich_route(route: dict) -> dict:
 
 @app.websocket("/ws/ingest")
 async def ws_ingest(websocket: WebSocket, token: str = ""):
-    if token != INGEST_TOKEN:
+    device = None
+
+    if token:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        device = await asyncio.to_thread(
+            database.get_device_by_token,
+            token_hash,
+        )
+
+    if device is None and token != INGEST_TOKEN:
         await websocket.close(code=4401)
         print("[backend] rejected agent connection: bad token")
         return
 
     await websocket.accept()
-    print("[backend] agent connected")
+
+    if device:
+        print(
+            f"[backend] device connected: "
+            f"{device['device_id']} (user {device['user_id']})"
+        )
+    else:
+        print("[backend] legacy agent connected")
+
     try:
         while True:
             message = json.loads(await websocket.receive_text())
             kind = message.get("type")
+
             if kind == "packet_batch":
-                stats.add_batch(message.get("packets", []))
+                if device:
+                    device_id = device["device_id"]
+                    user_id = device["user_id"]
+                else:
+                    device_id = message.get("device_id") or "legacy"
+                    user_id = None
+
+                packet_list = message.get("packets", [])
+
+                for packet in packet_list:
+                    if isinstance(packet, dict):
+                        packet["device_id"] = device_id
+
+                if device:
+                    if device_id not in stats_by_device:
+                        stats_by_device[device_id] = RollingStats()
+
+                    device_user_ids[device_id] = user_id
+                    stats_by_device[device_id].add_batch(packet_list)
+                else:
+                    stats.add_batch(packet_list)
+
             elif kind == "route_batch":
                 for route in message.get("routes", []):
                     enriched = await enrich_route(route)
+
                     await asyncio.to_thread(
                         database.save_route_observation,
                         enriched.get("target", ""),
                         enriched.get("hops", []),
                         enriched.get("total_rtt_ms"),
                     )
+
                     await asyncio.to_thread(
                         database.save_route_events,
                         enriched.get("events", []),
                     )
+
     except WebSocketDisconnect:
         print("[backend] agent disconnected")
     except Exception as exc:
         print(f"[backend] ingest error: {exc}")
 
-
 @app.websocket("/ws/dashboard")
 async def ws_dashboard(websocket: WebSocket):
-    await dashboard_manager.connect(websocket)
+    user_id = get_user_id(websocket.cookies.get(SESSION_COOKIE))
+    await dashboard_manager.connect(websocket, user_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         dashboard_manager.disconnect(websocket)
 
-
 async def broadcast_loop():
     while True:
         await asyncio.sleep(BROADCAST_INTERVAL)
-        snapshot = stats.snapshot()
-        await asyncio.to_thread(database.save_snapshot, snapshot)
-        if snapshot["alerts"]:
-            await asyncio.to_thread(database.save_anomalies, snapshot["alerts"])
-        if dashboard_manager.clients:
-            await dashboard_manager.broadcast(snapshot)
+
+        if stats_by_device:
+            for device_id, device_stats in list(stats_by_device.items()):
+                snapshot = device_stats.snapshot()
+                snapshot["device_id"] = device_id
+
+                await asyncio.to_thread(database.save_snapshot, snapshot)
+
+                if snapshot["alerts"]:
+                    await asyncio.to_thread(
+                        database.save_anomalies,
+                        snapshot["alerts"],
+                    )
+
+                user_id = device_user_ids.get(device_id)
+
+                if user_id is not None and dashboard_manager.clients:
+                    await dashboard_manager.broadcast(snapshot, user_id)
+
+        elif stats.packets:
+            snapshot = stats.snapshot()
+
+            await asyncio.to_thread(database.save_snapshot, snapshot)
+
+            if snapshot["alerts"]:
+                await asyncio.to_thread(
+                    database.save_anomalies,
+                    snapshot["alerts"],
+                )
+
+            if dashboard_manager.clients:
+                await dashboard_manager.broadcast(snapshot, None)
 
 
 @app.on_event("startup")
@@ -370,3 +485,8 @@ if not STATIC_DIR.exists():
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="frontend")
+
+
+
+
+

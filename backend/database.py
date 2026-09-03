@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import time
 from typing import Any
@@ -25,6 +25,16 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     created_at = Column(Float, default=time.time, nullable=False)
 
+class Device(Base):
+    __tablename__ = "devices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    device_id = Column(String(255), index=True, nullable=False)
+    device_name = Column(String(255), nullable=True)
+    token_hash = Column(String(255), nullable=False, unique=True, index=True)
+    created_at = Column(Float, default=time.time, nullable=False)
+    last_seen = Column(Float, default=time.time, nullable=False)
 
 class Snapshot(Base):
     __tablename__ = "snapshots"
@@ -131,6 +141,82 @@ def create_user(username: str, password_hash: str) -> dict[str, Any]:
         db.commit()
         db.refresh(user)
         return {"id": user.id, "username": user.username}
+    finally:
+        db.close()
+
+def register_device(
+    user_id: int,
+    device_id: str,
+    device_name: str | None = None,
+    token_hash: str | None = None,
+) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        device = (
+            db.query(Device)
+            .filter(
+                Device.user_id == user_id,
+                Device.device_id == device_id,
+            )
+            .first()
+        )
+
+        now = time.time()
+
+        if device:
+            device.last_seen = now
+            if device_name:
+                device.device_name = device_name
+        else:
+            device = Device(
+                user_id=user_id,
+                device_id=device_id,
+                device_name=device_name or device_id,
+                token_hash=token_hash,
+                created_at=now,
+                last_seen=now,
+            )
+            db.add(device)
+
+        db.commit()
+        db.refresh(device)
+
+        return {
+            "id": device.id,
+            "user_id": device.user_id,
+            "device_id": device.device_id,
+            "device_name": device.device_name,
+            "last_seen": device.last_seen,
+        }
+    finally:
+        db.close()
+
+
+def get_device(
+    user_id: int,
+    device_id: str,
+) -> dict[str, Any] | None:
+    db = SessionLocal()
+    try:
+        device = (
+            db.query(Device)
+            .filter(
+                Device.user_id == user_id,
+                Device.device_id == device_id,
+            )
+            .first()
+        )
+
+        if not device:
+            return None
+
+        return {
+            "id": device.id,
+            "user_id": device.user_id,
+            "device_id": device.device_id,
+            "device_name": device.device_name,
+            "last_seen": device.last_seen,
+        }
     finally:
         db.close()
 
@@ -429,3 +515,29 @@ def prune_old(days: int = 7) -> None:
                 conn.execute(text("VACUUM"))
     finally:
         db.close()
+
+def get_devices_for_user(user_id: int) -> list[dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        devices = (
+            db.query(Device)
+            .filter(Device.user_id == user_id)
+            .order_by(Device.created_at.desc())
+            .all()
+        )
+
+        return [
+            {
+                "id": device.id,
+                "device_id": device.device_id,
+                "device_name": device.device_name,
+                "created_at": device.created_at,
+                "last_seen": device.last_seen,
+            }
+            for device in devices
+        ]
+    finally:
+        db.close()
+
+
+

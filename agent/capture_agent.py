@@ -1,4 +1,4 @@
-"""Local packet capture agent with safe, optional traceroute collection."""
+﻿"""Local packet capture agent with safe, optional traceroute collection."""
 import argparse
 import asyncio
 import ipaddress
@@ -187,19 +187,19 @@ def run_traceroute(target):
     }
 
 
-async def flush_loop(ws):
+async def flush_loop(ws, device_id):
     sent = 0
     while True:
         await asyncio.sleep(1)
         payload = pop_batch()
         if not payload:
             continue
-        await ws.send(json.dumps({"type": "packet_batch", "packets": payload}))
+        await ws.send(json.dumps({"type": "packet_batch", "device_id": device_id, "packets": payload}))
         sent += len(payload)
         print(f"[agent] sent {len(payload)} packets (total sent: {sent})")
 
 
-async def route_loop(ws):
+async def route_loop(ws, device_id):
     """Optional route task. Any error is isolated from packet flushing."""
     while True:
         await asyncio.sleep(30)
@@ -214,7 +214,7 @@ async def route_loop(ws):
                 if route:
                     routes.append(route)
             if routes:
-                await ws.send(json.dumps({"type": "route_batch", "routes": routes}))
+                await ws.send(json.dumps({"type": "route_batch", "device_id": device_id, "routes": routes}))
                 print(f"[agent] sent {len(routes)} route observations")
         except asyncio.CancelledError:
             raise
@@ -222,7 +222,7 @@ async def route_loop(ws):
             print(f"[agent] route loop error: {exc}")
 
 
-async def main(iface, backend_url, token):
+async def main(iface, backend_url, token, device_id):
     threading.Thread(target=sniff_thread, args=(iface,), daemon=True).start()
     full_url = f"{backend_url}?token={token}"
 
@@ -231,8 +231,8 @@ async def main(iface, backend_url, token):
             print(f"[agent] connecting to backend at {backend_url}")
             async with websockets.connect(full_url, ping_interval=20, ping_timeout=20) as ws:
                 print("[agent] connected. streaming traffic...")
-                packet_task = asyncio.create_task(flush_loop(ws))
-                route_task = asyncio.create_task(route_loop(ws))
+                packet_task = asyncio.create_task(flush_loop(ws, device_id))
+                route_task = asyncio.create_task(route_loop(ws, device_id))
                 done, pending = await asyncio.wait(
                     {packet_task, route_task},
                     return_when=asyncio.FIRST_EXCEPTION,
@@ -247,7 +247,7 @@ async def main(iface, backend_url, token):
 
                 # Keep packet capture alive even if route task ended.
                 if route_task in done:
-                    route_task = asyncio.create_task(route_loop(ws))
+                    route_task = asyncio.create_task(route_loop(ws, device_id))
                 await packet_task
 
         except asyncio.CancelledError:
@@ -263,8 +263,11 @@ if __name__ == "__main__":
     parser.add_argument("--iface", default=None, help="Network interface to sniff")
     parser.add_argument("--backend", required=True, help="Backend WebSocket URL")
     parser.add_argument("--token", required=True, help="Backend ingest token")
+    parser.add_argument("--device-id", default=platform.node(), help="Unique identifier for this device")
     args = parser.parse_args()
     try:
-        asyncio.run(main(args.iface, args.backend, args.token))
+        asyncio.run(main(args.iface, args.backend, args.token, args.device_id))
     except KeyboardInterrupt:
         print("\n[agent] stopped")
+
+
