@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 traffic.db
 .env
+agent/agent_config.json
+
+# Local agent configuration / build files
+backend/agent_config.json
+backend/agent_config-BACKUP.json
+agent/agent_config.json
+agent/agent_config-BACKUP.json
+agent-BACKUP/
+agent/build/
+agent/imports.tmp
