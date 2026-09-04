@@ -115,12 +115,19 @@ def run_traceroute(target):
         else:
             cmd = ["traceroute", "-n", "-m", "20", "-w", "1", target]
 
+        run_kwargs = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 45,
+            "errors": "ignore",
+        }
+
+        if platform.system().lower().startswith("win"):
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         completed = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=45,
-            errors="ignore",
+            **run_kwargs,
         )
     except Exception as exc:
         print(f"[agent] traceroute failed for {target}: {exc}")
@@ -293,6 +300,7 @@ if __name__ == "__main__":
         asyncio.run(main(args.iface, args.backend, args.token, args.device_id))
     except KeyboardInterrupt:
         print("\n[agent] stopped")
+
 
 
 
