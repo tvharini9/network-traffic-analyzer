@@ -167,6 +167,8 @@ def register_device(
             device.last_seen = now
             if device_name:
                 device.device_name = device_name
+            if token_hash:
+                device.token_hash = token_hash
         else:
             device = Device(
                 user_id=user_id,
@@ -565,4 +567,5 @@ def get_device_by_token(token_hash: str) -> dict[str, Any] | None:
         }
     finally:
         db.close()
+
 
