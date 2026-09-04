@@ -445,34 +445,42 @@ async def broadcast_loop():
             for device_id, device_stats in list(stats_by_device.items()):
                 snapshot = device_stats.snapshot()
                 snapshot["device_id"] = device_id
+                user_id = device_user_ids.get(device_id)
 
+                # Send live data first. Database failures must not stop the dashboard.
+                if user_id is not None and dashboard_manager.clients:
+                    await dashboard_manager.broadcast(snapshot, user_id)
+
+                # Save history separately. A DB failure must not kill this loop.
+                try:
+                    await asyncio.to_thread(database.save_snapshot, snapshot)
+
+                    if snapshot.get("alerts"):
+                        await asyncio.to_thread(
+                            database.save_anomalies,
+                            snapshot["alerts"],
+                        )
+
+                except Exception as exc:
+                    print(f"[backend] persistence error: {exc}")
+
+        elif stats.packets:
+            snapshot = stats.snapshot()
+
+            if dashboard_manager.clients:
+                await dashboard_manager.broadcast(snapshot, None)
+
+            try:
                 await asyncio.to_thread(database.save_snapshot, snapshot)
 
-                if snapshot["alerts"]:
+                if snapshot.get("alerts"):
                     await asyncio.to_thread(
                         database.save_anomalies,
                         snapshot["alerts"],
                     )
 
-                user_id = device_user_ids.get(device_id)
-
-                if user_id is not None and dashboard_manager.clients:
-                    await dashboard_manager.broadcast(snapshot, user_id)
-
-        elif stats.packets:
-            snapshot = stats.snapshot()
-
-            await asyncio.to_thread(database.save_snapshot, snapshot)
-
-            if snapshot["alerts"]:
-                await asyncio.to_thread(
-                    database.save_anomalies,
-                    snapshot["alerts"],
-                )
-
-            if dashboard_manager.clients:
-                await dashboard_manager.broadcast(snapshot, None)
-
+            except Exception as exc:
+                print(f"[backend] persistence error: {exc}")
 
 @app.on_event("startup")
 async def startup():
@@ -485,6 +493,7 @@ if not STATIC_DIR.exists():
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="frontend")
+
 
 
 
