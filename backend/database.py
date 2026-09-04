@@ -224,6 +224,13 @@ def get_device(
 
 
 def save_snapshot(snapshot: dict[str, Any]) -> None:
+    device_key = str(snapshot.get("device_id", "legacy"))
+    bucket = int(float(snapshot["ts"]) // 60)
+
+    if _last_snapshot_bucket.get(device_key) == bucket:
+        return
+
+    _last_snapshot_bucket[device_key] = bucket
     db = SessionLocal()
     try:
         db.add(
@@ -236,13 +243,7 @@ def save_snapshot(snapshot: dict[str, Any]) -> None:
                 protocol_breakdown_json=json.dumps(snapshot.get("protocol_breakdown", {})),
             )
         )
-        for sample in snapshot.get("device_samples", []):
-            db.add(DeviceSample(
-                ts=snapshot["ts"],
-                ip=sample["ip"],
-                bytes=int(sample["bytes"]),
-                packets=int(sample["packets"]),
-            ))
+
         db.commit()
     finally:
         db.close()
@@ -567,5 +568,6 @@ def get_device_by_token(token_hash: str) -> dict[str, Any] | None:
         }
     finally:
         db.close()
+
 
 
