@@ -13,3 +13,5 @@ agent/agent_config-BACKUP.json
 agent-BACKUP/
 agent/build/
 agent/imports.tmp
+
+agent/dist/agent_config.json
